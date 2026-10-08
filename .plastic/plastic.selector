@@ -1,0 +1,4 @@
+repository "CubeStuff/CubeStuff@2621123@cloud"
+  path "/"
+    br "/main"
+    co "/main"
