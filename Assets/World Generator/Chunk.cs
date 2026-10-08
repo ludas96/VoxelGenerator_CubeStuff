@@ -65,7 +65,7 @@ public class Chunk
         if (!_initialized)
         {
             _chunkObject.transform.position = _worldPosition;
-            _meshRenderer.material = World.Instance.VoxelMaterial;
+            _meshRenderer.sharedMaterial = World.Instance.VoxelMaterial;
             _chunkObject.layer = LayerMask.NameToLayer("Terrain");
         }
         
