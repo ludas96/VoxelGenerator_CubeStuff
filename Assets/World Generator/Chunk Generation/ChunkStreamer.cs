@@ -114,7 +114,6 @@ namespace World_Generator.Chunk_Generation
             _chunkVersions.Clear();
         }
         
-        // TODO: Kan lägga in "statistik" här också, t.ex. CountChunksInState(ChunkState state) för att visa i UI:t
         internal int CountChunksInState(ChunkState state)
         {
             return _chunks.Values.Count(x => x.State == state);
@@ -129,8 +128,6 @@ namespace World_Generator.Chunk_Generation
             public Transform CameraTransform { get; set; }
             public ChunkSize ChunkSize { get; set; } // 16x16x256
             public GameObject Container { get; set; }
-
-            public int LoadBudget { get; set; } // 10
         }
         
         private ChunkLoader _loader;
@@ -138,10 +135,6 @@ namespace World_Generator.Chunk_Generation
         private ChunkMesher _mesher;
 
         private readonly ChunkWorldState _worldState = new();
-
-        private double _totalChunkDuration = 0d;
-        private double _avgChunkDuration = 0d;
-        private int _totalChunkMeshed = 0;
 
         private ChunkStreamerSettings _settings;
         
@@ -151,7 +144,7 @@ namespace World_Generator.Chunk_Generation
             
             _loader = new ChunkLoader(new ChunkLoaderSettings
             {
-                ChunkLoadBudgetPerFrame = settings.LoadBudget,
+                ChunkLoadBudgetPerFrame = 25,
                 ChunkViewDistance = settings.ViewDistance,
                 PlayerTransform = settings.CameraTransform,
                 ChunkSize = settings.ChunkSize,
@@ -163,20 +156,19 @@ namespace World_Generator.Chunk_Generation
                 ChunkSize = settings.ChunkSize,
                 TasksPerThread = 5,
                 MaxActiveBatches = 10,
-                MaxChunksPerBatch = 25
+                MaxChunksPerBatch = 5
             }).WithLayers(
                 new BaseTerrainLayer(),
                 new ApplyModificationsLayer(),
                 new LightLayer()
             );
             
-            _mesher = new ChunkMesher(new ChunkMesherSettings
+            _mesher = new ChunkMesher(new ChunkMesher.ChunkMesherSettings
             {
                 ChunkSize =  settings.ChunkSize,
                 TasksPerThread = 5,
                 MaxActiveBatches = 10,
-                MaxChunksPerBatch = 5,
-                MaxChunkExtractionsPerFrame = 5
+                MaxChunksPerBatch = 5
             });
         }
 
@@ -184,6 +176,21 @@ namespace World_Generator.Chunk_Generation
         {
             /* ChunkLoader */
             _loader.Update();
+            HandleChunkLoader();
+            
+            /* ChunkGenerator */
+            _generator.Update();
+            HandleChunkGenerator();
+            
+            
+            /* ChunkMesher */
+            _mesher.Update();
+            HandleChunkMesher();
+            
+        }
+
+        private void HandleChunkLoader()
+        {
             while (_loader.TryGetUnloadRequest(out var request))
             {
                 _worldState.Remove(request);
@@ -192,7 +199,7 @@ namespace World_Generator.Chunk_Generation
             {
                 var handle = _worldState.AddOrUpdate(request.Position, request.Chunk);
                 if(request.LoadType == ChunkLoader.LoadType.New)
-                    _generator.Add(new ChunkGenerator.GenerationRequest(){ Handle = handle });
+                    _generator.Add(new ChunkGenerator.GenerationRequest(){ Handle = handle, Edits = request.Edits});
                 
                 else if (request.LoadType == ChunkLoader.LoadType.Update)
                 {
@@ -203,23 +210,14 @@ namespace World_Generator.Chunk_Generation
                         var pos = _settings.CameraTransform.position;
                         var playerChunkPos = ChunkHelpers.GetChunkPosFromWorldPos(pos, _settings.ChunkSize);
 
-                        int lod = 0;
-                        if (Vector3Int.Distance(playerChunkPos, handle.Position) <= 10)
-                            lod = 1;
-                        else if (Vector3Int.Distance(playerChunkPos, handle.Position) <= 30)
-                            lod = 2;
-                        else if (Vector3Int.Distance(playerChunkPos, handle.Position) <= 60)
-                            lod = 4;
-                        else
-                            lod = 8;
-                
+                        var lod = ChunkHelpers.GetLODAtDistance(Vector3Int.Distance(playerChunkPos, request.Position));
                         _mesher.Add(new MesherRequest(){ Handle = handle, Data = chunkData, LOD = lod });
                     }
                 }
             }
-            
-            /* ChunkGenerator */
-            _generator.Update();
+        }
+        private void HandleChunkGenerator()
+        {
             while (_generator.TryGetCompleted(out var result))
             {
                 if (!_worldState.IsCurrent(result.Handle))
@@ -236,27 +234,26 @@ namespace World_Generator.Chunk_Generation
                 var lod = ChunkHelpers.GetLODAtDistance(Vector3Int.Distance(playerChunkPos, result.Handle.Position));
                 _mesher.Add(new MesherRequest(){ Handle = result.Handle, Data = chunkData, LOD = lod });
             }
-            
-            /* ChunkMesher */
-            _mesher.Update();
-            while (_mesher.TryGetReadyToMesh(out var result))
+        }
+
+        private void HandleChunkMesher()
+        {
+            while (_mesher.TryGetReadyBatch(out var batch))
             {
-                if (!_worldState.IsCurrent(result.Handle))
+                var chunks = new Chunk[batch.TotalChunks];
+                for (int i = 0; i < batch.TotalChunks; i++)
                 {
-                    result.Batch.MarkChunkDone();
-                    continue;
+                    var handle = batch.ChunkHandles[i];
+                    
+                    if (!_worldState.IsCurrent(handle)) continue;
+                    
+                    _worldState.SetState(handle, ChunkWorldState.ChunkState.Meshing);
+
+                    if (_worldState.TryGet(handle, out var entry))
+                        chunks[i] = entry.Chunk;
                 }
                 
-                if (_worldState.TryGet(result.Handle, out var entry))
-                {
-                    _mesher.ApplyMesh(result, entry.Chunk);
-                    _worldState.SetState(result.Handle, ChunkWorldState.ChunkState.Meshing);
-                }
-                else
-                {
-                    result.Batch.MarkChunkDone();
-                    Debug.LogError($"Entry not found for {result.Handle.Position}");
-                }
+                _mesher.ApplyMeshBatch(batch, chunks);
             }
             while (_mesher.TryGetMeshed(out var result))
             {

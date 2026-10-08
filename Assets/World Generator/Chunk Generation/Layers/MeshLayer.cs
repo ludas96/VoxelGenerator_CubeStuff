@@ -1,29 +1,58 @@
-﻿using Unity.Burst;
+﻿using System;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
+using UnityEngine;
+using UnityEngine.Rendering;
 using World_Generator.Chunk_Generation.Layers.Internal;
 
 namespace World_Generator.Chunk_Generation.Layers
 {
-    public class MeshLayer
+    public class MeshLayer : IDisposable
     {
+        private NativeArray<VertexAttributeDescriptor> _vertexLayout;
+        public MeshLayer()
+        {
+            _vertexLayout = new NativeArray<VertexAttributeDescriptor>(4, Allocator.Persistent);
+            _vertexLayout[0] =
+                new VertexAttributeDescriptor(
+                    VertexAttribute.Position, 
+                    VertexAttributeFormat.Float32, 
+                    3, 
+                    stream: 0);
+            _vertexLayout[1] = new VertexAttributeDescriptor(
+                VertexAttribute.TexCoord0,
+                VertexAttributeFormat.Float32,
+                3,
+                stream: 1);
+            _vertexLayout[2] =  new VertexAttributeDescriptor(
+                    VertexAttribute.Color,
+                    VertexAttributeFormat.Float32, 
+                    4, 
+                    stream: 2);
+            _vertexLayout[3] = new VertexAttributeDescriptor(
+                VertexAttribute.Normal,
+                VertexAttributeFormat.Float32,
+                3,
+                stream: 3);
+        }
+        
         public JobHandle Schedule(
             MesherJobData jobData,
-            NativeHashMap<byte, BlockData> blockMap
+            NativeHashMap<byte, BlockData> blockMap,
+            Mesh.MeshDataArray meshDataArray
         )
         {
             var buffers = jobData.Buffers;
             
             // Reset MeshDataOffsets to prevent misreads
-            for (int i = 0; i < buffers.MeshDataOffsets.Length; i++)
-            {
-                buffers.MeshDataOffsets[i] = new ChunkMesher.MeshDataOffsets();
-            }
+            for (int i = 0; i < buffers.Offsets.Length; i++)
+                buffers.Offsets[i] = new ChunkMesher.MeshDataOffsets();
             
-            var prefetchMeshDataJob = new PrefetchGreedyMeshDataJob()
+            var prefetchJob = new PrefetchGreedyMeshDataJob()
             {
                 ChunkSize =  jobData.ChunkSize,
-                ChunkOffsets = buffers.MeshDataOffsets,
+                ChunkOffsets = buffers.Offsets,
                 BlockPadding = GeneratorConstants.BLOCK_PADDING,
                 Blocks = buffers.Blocks,
                 LightLevels = buffers.LightLevels,
@@ -31,38 +60,34 @@ namespace World_Generator.Chunk_Generation.Layers
                 LODs = buffers.LODs
             };
             
-            var handle = prefetchMeshDataJob.Schedule(jobData.TotalChunks, jobData.TasksPerThread);
+            var handle = prefetchJob.Schedule(
+                jobData.TotalChunks, 
+                jobData.TasksPerThread);
             
-            var sumMeshDataJob = new SumMeshDataJob
-            {
-                BlocksPerChunk = jobData.ChunkSize.GetTotalSize(GeneratorConstants.BLOCK_PADDING),
-                ChunkOffsets = buffers.MeshDataOffsets,
-                Vertices =  buffers.Vertices,
-                Normals = buffers.Normals,
-                UVs = buffers.UVs,
-                Triangles = buffers.Triangles,
-                Colors = buffers.Colors,
-            };
-            
-            handle = sumMeshDataJob.Schedule(handle);
-            
-            var meshDataJob = new GenerateGreedyMeshJob()
+            var meshJob = new GenerateGreedyMeshJob()
             {
                 ChunkSize = jobData.ChunkSize,
-                ChunkOffsets = buffers.MeshDataOffsets,
+                ChunkOffsets = buffers.Offsets,
                 BlockPadding =  GeneratorConstants.BLOCK_PADDING,
                 Blocks = buffers.Blocks,
                 BlockMap =  blockMap,
-                Vertices = buffers.Vertices,
-                Normals = buffers.Normals,
-                UVs = buffers.UVs,
-                Triangles = buffers.Triangles,
                 LightLevels = buffers.LightLevels,
-                Colors = buffers.Colors,
-                LODs = buffers.LODs
+                LODs = buffers.LODs,
+                
+                MeshDataArray = meshDataArray,
+                VertexLayout = _vertexLayout
             };
             
-            return meshDataJob.Schedule(jobData.TotalChunks, jobData.TasksPerThread, handle);
+            return meshJob.Schedule(
+                jobData.TotalChunks, 
+                jobData.TasksPerThread,
+                handle);
+        }
+
+        public void Dispose()
+        {
+            if(_vertexLayout.IsCreated)
+                _vertexLayout.Dispose();
         }
     }
     [BurstCompile]

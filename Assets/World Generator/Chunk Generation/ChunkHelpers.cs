@@ -128,6 +128,7 @@ namespace World_Generator.Chunk_Generation
 
         public static int GetLODAtDistance(float distance)
         {
+            return 1;
             int lod = 0;
             if (distance <= 6)
                 lod = 1;

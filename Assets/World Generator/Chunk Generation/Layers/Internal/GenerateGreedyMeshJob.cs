@@ -2,6 +2,8 @@
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
+using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace World_Generator.Chunk_Generation.Layers.Internal
 {
@@ -21,28 +23,17 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
         [NativeDisableParallelForRestriction] 
         public NativeArray<int> LODs;
 
-        [NativeDisableParallelForRestriction] 
-        public NativeList<float3> Vertices;
-        [NativeDisableParallelForRestriction] 
-        public NativeList<float3> Normals;
-        [NativeDisableParallelForRestriction] 
-        public NativeList<int> Triangles;
-        [NativeDisableParallelForRestriction] 
-        public NativeList<float3> UVs;
-        [NativeDisableParallelForRestriction] 
-        public NativeList<float4> Colors;
+        [ReadOnly] public NativeArray<VertexAttributeDescriptor> VertexLayout;
+        public Mesh.MeshDataArray MeshDataArray;
+
+       private int _vertOffset;
+       private int _triOffset;
         
         [ReadOnly] public ChunkSize ChunkSize;
         [ReadOnly] public int BlockPadding;
         
-        private int _vertOffset;      // Current offset into Vertices array for this chunk
-        private int _triOffset;       // Current offset into Triangles array for this chunk
-
-        private int _startOffset;
-        
         private int _chunkIndex;      // Index of the chunk being processed
         private int _chunkStartIndex; // Starting index in Blocks array for this chunk
-        private int _blocksPerChunk;  // Total blocks per chunk including padding
         private int _paddedWidth;     // Width/depth of chunk including padding on both sides
         
         private float3 _boundsMin;
@@ -59,38 +50,63 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
             _boundsMin = new float3(float.MaxValue);
             _boundsMax = new float3(float.MinValue);
 
-            ChunkMesher.MeshDataOffsets offsets = ChunkOffsets[_chunkIndex];
-            _vertOffset = offsets.VertexOffset;
-            _triOffset = offsets.IndexOffset;
-            _startOffset = _vertOffset;
-            _chunkStartIndex = offsets.BlockOffset;
+            var offsets = ChunkOffsets[_chunkIndex];
+            var meshData = MeshDataArray[_chunkIndex];
+            
+            meshData.SetVertexBufferParams(offsets.VertexCount, VertexLayout);
+            meshData.SetIndexBufferParams(offsets.TriangleCount, IndexFormat.UInt32);
+
+            var vertices = meshData.GetVertexData<float3>(0);
+            var uvs = meshData.GetVertexData<float3>(1);
+            var colors = meshData.GetVertexData<float4>(2);
+            var normals = meshData.GetVertexData<float3>(3);
+
+            var triangles = meshData.GetIndexData<int>();
+
+            _vertOffset = 0;
+            _triOffset = 0;
+            
+            int blocksPerChunk = ChunkSize.GetTotalSize(BlockPadding);
+            _chunkStartIndex = _chunkIndex * blocksPerChunk;
             
             _paddedWidth = ChunkSize.GetPaddedWidth(BlockPadding);
-            _blocksPerChunk = ChunkSize.GetTotalSize(BlockPadding);
             
             // Process each of the 6 faces separately (greedy meshing works on 2D slices)
             // We'll do: Right(+X), Left(-X), Top(+Y), Bottom(-Y), Front(+Z), Back(-Z)
-            GreedyMeshFace(new int3(1, 0, 0));  // Right face (+X)
-            GreedyMeshFace(new int3(-1, 0, 0)); // Left face (-X)
+            GreedyMeshFace(new int3(1, 0, 0), vertices, normals, uvs, colors, triangles);  // Right face (+X)
+            GreedyMeshFace(new int3(-1, 0, 0), vertices, normals, uvs, colors, triangles); // Left face (-X)
 
-            GreedyMeshFace(new int3(0, 1, 0));  // Top face (+Y)
-            GreedyMeshFace(new int3(0, -1, 0)); // Bottom face (-Y)
-            GreedyMeshFace(new int3(0, 0, 1));  // Front face (+Z)
-            GreedyMeshFace(new int3(0, 0, -1)); // Back face (-Z)
+            GreedyMeshFace(new int3(0, 1, 0), vertices, normals, uvs, colors, triangles);  // Top face (+Y)
+            GreedyMeshFace(new int3(0, -1, 0), vertices, normals, uvs, colors, triangles); // Bottom face (-Y)
+            GreedyMeshFace(new int3(0, 0, 1), vertices, normals, uvs, colors, triangles);  // Front face (+Z)
+            GreedyMeshFace(new int3(0, 0, -1), vertices, normals, uvs, colors, triangles); // Back face (-Z)
 
             offsets.BoundsMin = _boundsMin;
             offsets.BoundsMax = _boundsMax;
 
             ChunkOffsets[_chunkIndex] = offsets;
+
+            meshData.subMeshCount = 1;
+            meshData.SetSubMesh(0,
+                new SubMeshDescriptor(
+                    0,
+                    offsets.TriangleCount,
+                    MeshTopology.Triangles),
+                MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
         }
         
         /// <summary>
         /// Performs greedy meshing for a single face direction
         /// </summary>
         /// <param name="normal">The normal vector of the face we're processing</param>
-        private void GreedyMeshFace(int3 normal)
+        private void GreedyMeshFace(
+            int3 normal,
+            NativeArray<float3> vertices,
+            NativeArray<float3> normals,
+            NativeArray<float3> uvs,
+            NativeArray<float4> colors,
+            NativeArray<int> triangles)
         {
-
             // Determine which axis is perpendicular to the face (the "depth" axis)
             // and which two axes form the plane of the face (u and v axes)
             int3 axisU, axisV;
@@ -226,7 +242,7 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
                         uint packedLight = maskEntry.PackedCornerLight;
                         int u = cu * _stepSize;
                         int v = cv * _stepSize;
-                        CreateQuad(u, v, depth, width, height, normal, axisU, axisV, textureId, packedLight);
+                        CreateQuad(u, v, depth, width, height, normal, axisU, axisV, textureId, packedLight, vertices, normals, uvs, colors, triangles);
                         
                         // Clear the mask for all blocks we just merged
                         for (int h = 0; h < height; h++)
@@ -355,8 +371,22 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
         /// <summary>
         /// Creates a quad (two triangles) for a merged group of faces
         /// </summary>
-        private void CreateQuad(int u, int v, int depth, int width, int height,
-            int3 normal, int3 axisU, int3 axisV, int textureId, uint packedLight)
+        private void CreateQuad(
+            int u,
+            int v,
+            int depth,
+            int width,
+            int height,
+            int3 normal,
+            int3 axisU,
+            int3 axisV,
+            int textureId, 
+            uint packedLight,
+            NativeArray<float3> vertices,
+            NativeArray<float3> normals,
+            NativeArray<float3> uvs,
+            NativeArray<float4> colors,
+            NativeArray<int> triangles)
         {
             // Get world position of bottom-left corner of the quad
             int3 basePos = GetPositionFromUVD(u, v, depth, normal, axisU, axisV);
@@ -394,27 +424,27 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
             int startVert = _vertOffset;
 
             // Add vertices
-            Vertices[_vertOffset++] = v0;
-            Vertices[_vertOffset++] = v1;
-            Vertices[_vertOffset++] = v2;
-            Vertices[_vertOffset++] = v3;
+            vertices[_vertOffset++] = v0;
+            vertices[_vertOffset++] = v1;
+            vertices[_vertOffset++] = v2;
+            vertices[_vertOffset++] = v3;
             
             float3 faceNormal = (float3)normal;
 
-            Normals[startVert + 0] = faceNormal;
-            Normals[startVert + 1] = faceNormal;
-            Normals[startVert + 2] = faceNormal;
-            Normals[startVert + 3] = faceNormal;
+            normals[startVert + 0] = faceNormal;
+            normals[startVert + 1] = faceNormal;
+            normals[startVert + 2] = faceNormal;
+            normals[startVert + 3] = faceNormal;
 
             float l0 = (packedLight & 0xFF) / 15f;
             float l1 = ((packedLight >> 8) & 0xFF) / 15f;
             float l2 = ((packedLight >> 16) & 0xFF) / 15f;
             float l3 = ((packedLight >> 24) & 0xFF) / 15f;
 
-            Colors[startVert + 0] = new float4(l0, l0, l0, 1);
-            Colors[startVert + 1] = new float4(l1, l1, l1, 1);
-            Colors[startVert + 2] = new float4(l2, l2, l2, 1);
-            Colors[startVert + 3] = new float4(l3, l3, l3, 1);
+            colors[startVert + 0] = new float4(l0, l0, l0, 1);
+            colors[startVert + 1] = new float4(l1, l1, l1, 1);
+            colors[startVert + 2] = new float4(l2, l2, l2, 1);
+            colors[startVert + 3] = new float4(l3, l3, l3, 1);
             
 
         // Add triangles (two triangles form the quad)
@@ -433,23 +463,23 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
             
             if (!flipWinding)
             {
-                Triangles[_triOffset++] = startVert - _startOffset;
-                Triangles[_triOffset++] = startVert + 2 - _startOffset;
-                Triangles[_triOffset++] = startVert + 1 - _startOffset;
+                triangles[_triOffset++] = startVert;
+                triangles[_triOffset++] = startVert + 2;
+                triangles[_triOffset++] = startVert + 1;
                 
-                Triangles[_triOffset++] = startVert - _startOffset;
-                Triangles[_triOffset++] = startVert + 3 - _startOffset;
-                Triangles[_triOffset++] = startVert + 2 - _startOffset;
+                triangles[_triOffset++] = startVert;
+                triangles[_triOffset++] = startVert + 3;
+                triangles[_triOffset++] = startVert + 2;
             }
             else
             {
-                Triangles[_triOffset++] = startVert - _startOffset;
-                Triangles[_triOffset++] = startVert + 1 - _startOffset;
-                Triangles[_triOffset++] = startVert + 2 - _startOffset;
+                triangles[_triOffset++] = startVert;
+                triangles[_triOffset++] = startVert + 1;
+                triangles[_triOffset++] = startVert + 2;
                 
-                Triangles[_triOffset++] = startVert - _startOffset;
-                Triangles[_triOffset++] = startVert + 2 - _startOffset;
-                Triangles[_triOffset++] = startVert + 3 - _startOffset;
+                triangles[_triOffset++] = startVert;
+                triangles[_triOffset++] = startVert + 2;
+                triangles[_triOffset++] = startVert + 3;
             }
             
             // Add UVs - orientation depends on the face direction
@@ -457,26 +487,26 @@ namespace World_Generator.Chunk_Generation.Layers.Internal
             if (normal.x != 0)
             {
                 // X-axis faces need rotated UVs
-                UVs[startVert] = new float3(0, 0, textureId);
-                UVs[startVert + 1] = new float3(height, 0, textureId);
-                UVs[startVert + 2] = new float3(height, width, textureId);
-                UVs[startVert + 3] = new float3(0, width, textureId);
+                uvs[startVert] = new float3(0, 0, textureId);
+                uvs[startVert + 1] = new float3(height, 0, textureId);
+                uvs[startVert + 2] = new float3(height, width, textureId);
+                uvs[startVert + 3] = new float3(0, width, textureId);
             }
             else if (normal.z != 0)
             {
                 // Z-axis faces might need adjustment too
-                UVs[startVert] = new float3(0, 0, textureId);
-                UVs[startVert + 1] = new float3(0, height, textureId);
-                UVs[startVert + 2] = new float3(width, height, textureId);
-                UVs[startVert + 3] = new float3(width, 0, textureId);
+                uvs[startVert] = new float3(0, 0, textureId);
+                uvs[startVert + 1] = new float3(0, height, textureId);
+                uvs[startVert + 2] = new float3(width, height, textureId);
+                uvs[startVert + 3] = new float3(width, 0, textureId);
             }
             else
             {
                 // Y-axis faces (Top/Bottom)
-                UVs[startVert] = new float3(0, 0, textureId);
-                UVs[startVert + 1] = new float3(0, height, textureId);
-                UVs[startVert + 2] = new float3(width, height, textureId);
-                UVs[startVert + 3] = new float3(width, 0, textureId);
+                uvs[startVert] = new float3(0, 0, textureId);
+                uvs[startVert + 1] = new float3(0, height, textureId);
+                uvs[startVert + 2] = new float3(width, height, textureId);
+                uvs[startVert + 3] = new float3(width, 0, textureId);
             }
         }
         

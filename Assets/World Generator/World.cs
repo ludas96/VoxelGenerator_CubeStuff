@@ -50,7 +50,6 @@ public class World : MonoBehaviour
         {
             ChunkSize = ChunkSize,
             Container = gameObject,
-            LoadBudget = 10,
             ViewDistance = ChunkViewDistance,
             CameraTransform =  CameraTransform,
         });

@@ -114,6 +114,8 @@ namespace World_Generator.Chunk_Generation
         private Queue<GenerationRequest> _requests = new();
         private Queue<GenerationResult> _results = new();
 
+        private FastNoiseLiteStruct _noiseSettings = new();
+
         public ChunkGenerator(ChunkGeneratorSettings settings)
         {
             _settings = settings;
@@ -129,7 +131,7 @@ namespace World_Generator.Chunk_Generation
                 _settings.MaxActiveBatches,
                 _settings.ChunkSize.GetTotalSize(GeneratorConstants.BLOCK_PADDING)
             );
-
+            _noiseSettings.CopyFrom(World.Instance.Noise);
         }
 
         public void Add(GenerationRequest request)
@@ -150,13 +152,11 @@ namespace World_Generator.Chunk_Generation
         {
             var blockSizePerChunk = _settings.ChunkSize.GetTotalSize(GeneratorConstants.BLOCK_PADDING);
             int chunkCount = buildParams.RequestBatch.Count;
-            var noiseSettings = new FastNoiseLiteStruct();
-            noiseSettings.CopyFrom(World.Instance.Noise);
 
             var jobData = new GeneratorJobData
             {
                 Buffers = buildParams.Buffers,
-                Noise = noiseSettings,
+                Noise = _noiseSettings,
                 TotalChunks = chunkCount
             };
 

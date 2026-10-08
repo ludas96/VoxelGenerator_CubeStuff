@@ -167,6 +167,7 @@ public class ChunkLoader
             }
         }
         
+        /*
         // Existing chunks inside the new view distance.
         // Re-sample their LOD.
         int minX = Math.Max(oldCenter.x - half, newCenter.x - half);
@@ -182,6 +183,7 @@ public class ChunkLoader
                 EnqueueCreate(new Vector3Int(x, 0, z));
             }
         }
+        */
     }
 
     private void EnqueueCreate(Vector3Int pos)
@@ -210,7 +212,7 @@ public class ChunkLoader
 
     private void ProcessRemoveQueue()
     {
-        int budget = _chunkLoadBudgetPerFrame;
+        int budget = 5; //_chunkLoadBudgetPerFrame;
 
         while (budget-- > 0 && _pendingRemoveQueue.Count > 0)
         {

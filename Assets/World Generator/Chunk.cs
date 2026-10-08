@@ -105,7 +105,10 @@ public class Chunk
         _chunkObject.transform.position = _worldPosition;
         _chunkObject.name = $"Chunk ({_localPosition})";
         _meshFilter.sharedMesh = Mesh;
-        _meshCollider.sharedMesh = Mesh;
+        if (Mesh.vertexCount > 0)
+        {
+            _meshCollider.sharedMesh = Mesh;
+        }
 
         _isMeshed = true;
         LOD = lod;
